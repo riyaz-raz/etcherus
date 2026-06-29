@@ -111,12 +111,7 @@ impl HomeView {
         if let Some(image) = selected_image {
             let formatted_size = image.formatted_size();
             let image_info = row![container(
-                row![
-                    text("📄"),
-                    text(image.name),
-                    text(format!("({})", formatted_size)),
-                ]
-                .spacing(8)
+                row![text(image.name), text(format!("({})", formatted_size)),].spacing(8)
             )
             .padding(10)
             .style(container_styles::bordered_box)];
@@ -138,7 +133,7 @@ impl HomeView {
         let mut col = Column::new().spacing(12);
 
         let header = row![
-            text("💾 Drive").size(18),
+            text("Drive").size(18),
             Space::with_width(Length::Fill),
             text(format!("{} found", drives.len())).size(14),
         ];
@@ -148,7 +143,7 @@ impl HomeView {
         if drives.is_empty() {
             let empty_state = container(
                 Column::new()
-                    .push(text("🔌 No drives found").size(16))
+                    .push(text("No drives found").size(16))
                     .push(text("Insert a USB drive and refresh").size(14))
                     .push(button("Refresh").on_press(Message::Refresh))
                     .spacing(8)
@@ -191,7 +186,7 @@ impl HomeView {
         ];
 
         if is_selected {
-            row = row.push(text("✅").size(24));
+            row = row.push(text("Done").size(24));
         } else {
             row = row.push(widget::Row::new());
         }
@@ -210,9 +205,9 @@ impl HomeView {
     fn validation_status(is_valid: bool, msg: String) -> Element<'static, Message> {
         let is_success = is_valid;
         let (icon, color) = if is_success {
-            ("✅", Color::from_rgb(0.0, 0.6, 0.0))
+            ("Done", Color::from_rgb(0.0, 0.6, 0.0))
         } else {
-            ("⚠️", Color::from_rgb(0.8, 0.5, 0.0))
+            ("Error", Color::from_rgb(0.8, 0.5, 0.0))
         };
 
         let status = row![
@@ -231,7 +226,7 @@ impl HomeView {
 
     fn error_display(error: String) -> Element<'static, Message> {
         let content = row![
-            text("❌").size(20),
+            text("Error").size(20),
             text(error).size(14),
             Space::with_width(Length::Fill),
             button("×")
@@ -259,7 +254,7 @@ impl HomeView {
 
         let button_content: Element<'static, Message> = if is_flashing {
             row![
-                text("⏳ Flashing in progress..."),
+                text("Flashing in progress..."),
                 widget::ProgressBar::new(0.0..=1.0, flash_progress)
                     .style(iced::theme::ProgressBar::Primary)
                     .width(Length::Fill),
@@ -267,7 +262,7 @@ impl HomeView {
             .spacing(8)
             .into()
         } else {
-            text("▶️ Start Flashing").size(16).into()
+            text("Start Flashing").size(16).into()
         };
 
         let flash_button = button(button_content)
@@ -281,7 +276,7 @@ impl HomeView {
 
         col = col.push(flash_button);
 
-        let refresh_button = button("🔄 Refresh")
+        let refresh_button = button("Refresh")
             .on_press(Message::Refresh)
             .padding(8)
             .width(Length::Fill);
