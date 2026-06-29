@@ -16,6 +16,7 @@ pub enum Message {
     FlashError(String),
     Refresh,
     ClearError,
+    NoOp,
 }
 
 pub struct EtcherusApp {
@@ -88,17 +89,48 @@ impl Application for EtcherusApp {
                 self.validate_selection();
                 Command::none()
             }
-            Message::SelectImage => {
-                let mock_image = ImageModel {
-                    name: "firmware_v1.2.bin".to_string(),
-                    path: "/path/to/firmware_v1.2.bin".to_string(),
-                    size: 1024 * 1024 * 50,
-                    file_type: crate::models::image_model::ImageType::Firmware,
-                };
-                self.selected_image = Some(mock_image);
-                self.validate_selection();
-                Command::none()
-            }
+            Message::SelectImage => Command::perform(
+                async {
+                    let file_handle = rfd::AsyncFileDialog::new()
+                        .add_filter("ISO Images", &["iso"])
+                        .add_filter("Disk Images", &["img"])
+                        .add_filter("Binary Files", &["bin"])
+                        .add_filter("All Files", &["*"])
+                        .pick_file()
+                        .await;
+
+                    if let Some(handle) = file_handle {
+                        let path = handle.path();
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "Unknown".to_string());
+                        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+
+                        let file_type = match path.extension().and_then(|ext| ext.to_str()) {
+                            Some("iso") => crate::models::image_model::ImageType::Os,
+                            Some("img") => crate::models::image_model::ImageType::Os,
+                            _ => crate::models::image_model::ImageType::Firmware,
+                        };
+
+                        Some(ImageModel {
+                            name,
+                            path: path.to_string_lossy().to_string(),
+                            size,
+                            file_type,
+                        })
+                    } else {
+                        None
+                    }
+                },
+                |maybe_image| {
+                    if let Some(image) = maybe_image {
+                        Message::ImageSelected(image)
+                    } else {
+                        Message::NoOp
+                    }
+                },
+            ),
             Message::ImageSelected(image) => {
                 self.selected_image = Some(image);
                 self.validate_selection();
@@ -156,6 +188,7 @@ impl Application for EtcherusApp {
                 self.error = None;
                 Command::none()
             }
+            Message::NoOp => Command::none(),
         }
     }
 
