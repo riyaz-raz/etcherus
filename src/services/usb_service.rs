@@ -12,35 +12,44 @@ impl UsbService {
     }
 
     pub async fn get_available_drives(&self) -> Result<Vec<DriveModel>> {
-        let mut drives = Vec::new();
+        let (tx, rx) = futures::channel::oneshot::channel();
 
-        #[cfg(target_os = "macos")]
-        {
-            drives.extend(self.get_macos_volumes().await?);
-        }
+        std::thread::spawn(move || {
+            let service = UsbService;
+            let mut drives = Vec::new();
 
-        #[cfg(target_os = "linux")]
-        {
-            drives.extend(self.get_linux_volumes().await?);
-        }
+            #[cfg(target_os = "macos")]
+            let res = service.get_macos_volumes().map(|v| {
+                drives.extend(v);
+                drives
+            });
 
-        #[cfg(target_os = "windows")]
-        {
-            drives.extend(self.get_windows_volumes().await?);
-        }
+            #[cfg(target_os = "linux")]
+            let res = service.get_linux_volumes().map(|v| {
+                drives.extend(v);
+                drives
+            });
 
-        Ok(drives)
+            #[cfg(target_os = "windows")]
+            let res = service.get_windows_volumes().map(|v| {
+                drives.extend(v);
+                drives
+            });
+
+            let _ = tx.send(res);
+        });
+
+        rx.await?
     }
 
     #[cfg(target_os = "macos")]
-    async fn get_macos_volumes(&self) -> Result<Vec<DriveModel>> {
+    fn get_macos_volumes(&self) -> Result<Vec<DriveModel>> {
         let mut drives = Vec::new();
 
         // First, try to get external drives from diskutil
-        let output = tokio::process::Command::new("diskutil")
+        let output = std::process::Command::new("diskutil")
             .args(["list", "external"])
-            .output()
-            .await?;
+            .output()?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -53,10 +62,9 @@ impl UsbService {
                 let dev_path = format!("/dev/{}", disk_name);
 
                 // Get detailed info for this disk
-                let info_output = tokio::process::Command::new("diskutil")
+                let info_output = std::process::Command::new("diskutil")
                     .args(["info", &dev_path])
-                    .output()
-                    .await?;
+                    .output()?;
 
                 let info_stdout = String::from_utf8_lossy(&info_output.stdout);
 
@@ -95,7 +103,7 @@ impl UsbService {
 
                 // Get space info if mounted
                 if !mount_point.is_empty() && Path::new(&mount_point).exists() {
-                    let (total_space, free_space) = self.get_space_info(&mount_point).await;
+                    let (total_space, free_space) = self.get_space_info(&mount_point);
 
                     if total_space > 0 {
                         drives.push(DriveModel {
@@ -113,50 +121,66 @@ impl UsbService {
                             is_mounted: true,
                         });
                     }
+                } else {
+                    // Try to parse disk info even if not mounted, to show unmounted USB drive
+                    let size_regex = Regex::new(r"Disk Size:\s+([\d.]+)\s+GB").unwrap();
+                    let mut total_space = 0;
+                    if let Some(cap) = size_regex.captures(&info_stdout) {
+                        if let Some(size_str) = cap.get(1) {
+                            if let Ok(size_gb) = size_str.as_str().parse::<f64>() {
+                                total_space = (size_gb * 1024.0 * 1024.0 * 1024.0) as u64;
+                            }
+                        }
+                    }
+
+                    drives.push(DriveModel {
+                        id: dev_path.clone(),
+                        name: volume_name.clone(),
+                        path: dev_path,
+                        total_space,
+                        used_space: 0,
+                        is_removable: true,
+                        mount_point: "".to_string(),
+                        drive_type: DriveType::Usb,
+                        vendor: vendor.clone(),
+                        model: volume_name,
+                        serial_number: "".to_string(),
+                        is_mounted: false,
+                    });
                 }
             }
         }
 
-        // Also scan /Volumes for any mounted USB drives
+        // Second, try to find already mounted volumes under /Volumes that might be USB drives
         let volumes_path = Path::new("/Volumes");
-        if volumes_path.exists() {
+        if volumes_path.exists() && volumes_path.is_dir() {
             if let Ok(entries) = std::fs::read_dir(volumes_path) {
                 for entry in entries.flatten() {
                     let path = entry.path();
+                    let path_str = path.to_str().unwrap_or("");
+
+                    // Skip Macintosh HD or similar system volumes
+                    if path_str.contains("Macintosh HD") || path_str == "/Volumes" {
+                        continue;
+                    }
+
+                    // Check if already added
+                    if drives.iter().any(|d| d.mount_point == path_str) {
+                        continue;
+                    }
+
+                    // Check if it's a mount point and get space info
                     if path.is_dir() {
-                        let name = path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("Unknown")
-                            .to_string();
+                        let (total_space, free_space) = self.get_space_info(path_str);
 
-                        // Skip system volumes
-                        let skip_volumes = [
-                            "Macintosh HD",
-                            "System",
-                            "Recovery",
-                            "com.apple",
-                            "Data",
-                            "Preboot",
-                            "VM",
-                            "Update",
-                        ];
+                        if total_space > 0 {
+                            let name = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "Unknown USB".to_string());
 
-                        let should_skip = skip_volumes
-                            .iter()
-                            .any(|&v| name == v || name.starts_with(v));
-                        if should_skip {
-                            continue;
-                        }
-
-                        // Check if this volume is already in our list
-                        let path_str = path.to_str().unwrap_or("");
-                        let exists = drives.iter().any(|d| d.mount_point == path_str);
-
-                        if !exists {
-                            let (total_space, free_space) = self.get_space_info(path_str).await;
-
-                            if total_space > 0 {
+                            // Check if this mount point is external
+                            if self.is_external_mount_macos(path_str) {
                                 drives.push(DriveModel {
                                     id: path_str.to_string(),
                                     name: name.clone(),
@@ -182,19 +206,30 @@ impl UsbService {
     }
 
     #[cfg(target_os = "macos")]
-    async fn get_space_info(&self, path: &str) -> (u64, u64) {
-        let total = self.get_total_space(path).await;
-        let free = self.get_free_space(path).await;
+    fn is_external_mount_macos(&self, mount_point: &str) -> bool {
+        if let Ok(output) = std::process::Command::new("diskutil")
+            .args(["info", mount_point])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return stdout.contains("Device Location: External");
+        }
+        false
+    }
+
+    #[cfg(target_os = "macos")]
+    fn get_space_info(&self, path: &str) -> (u64, u64) {
+        let total = self.get_total_space(path);
+        let free = self.get_free_space(path);
         (total, free)
     }
 
     #[cfg(target_os = "macos")]
-    async fn get_free_space(&self, path: &str) -> u64 {
+    fn get_free_space(&self, path: &str) -> u64 {
         // Use df to get free space
-        if let Ok(output) = tokio::process::Command::new("df")
+        if let Ok(output) = std::process::Command::new("df")
             .args(["-k", path])
             .output()
-            .await
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines().skip(1) {
@@ -210,12 +245,11 @@ impl UsbService {
     }
 
     #[cfg(target_os = "macos")]
-    async fn get_total_space(&self, path: &str) -> u64 {
+    fn get_total_space(&self, path: &str) -> u64 {
         // Use diskutil to get total space
-        if let Ok(output) = tokio::process::Command::new("diskutil")
+        if let Ok(output) = std::process::Command::new("diskutil")
             .args(["info", path])
             .output()
-            .await
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -241,10 +275,9 @@ impl UsbService {
         }
 
         // Fallback: try df
-        if let Ok(output) = tokio::process::Command::new("df")
+        if let Ok(output) = std::process::Command::new("df")
             .args(["-k", path])
             .output()
-            .await
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines().skip(1) {
@@ -261,7 +294,7 @@ impl UsbService {
     }
 
     #[cfg(target_os = "linux")]
-    async fn get_linux_volumes(&self) -> Result<Vec<DriveModel>> {
+    fn get_linux_volumes(&self) -> Result<Vec<DriveModel>> {
         let mut drives = Vec::new();
 
         // Compile regex patterns once outside the loop
@@ -271,14 +304,13 @@ impl UsbService {
         let size_regex = Regex::new(r#"SIZE="([^"]+)""#)?;
 
         // Use lsblk to find USB drives
-        if let Ok(output) = tokio::process::Command::new("lsblk")
+        if let Ok(output) = std::process::Command::new("lsblk")
             .args([
                 "-P",
                 "-o",
                 "NAME,FSTYPE,LABEL,SIZE,FSAVAIL,MOUNTPOINT,RM,HOTPLUG,TRAN,TYPE",
             ])
             .output()
-            .await
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -322,7 +354,7 @@ impl UsbService {
                         // Only add if we have a valid mount point and size
                         if total_space > 0 && !mount_point.is_empty() {
                             // Get free space using df
-                            let free_space = self.get_free_space_linux(mount_point).await;
+                            let free_space = self.get_free_space_linux(mount_point);
 
                             drives.push(DriveModel {
                                 id: format!("/dev/{}", name),
@@ -352,11 +384,10 @@ impl UsbService {
     }
 
     #[cfg(target_os = "linux")]
-    async fn get_free_space_linux(&self, path: &str) -> u64 {
-        if let Ok(output) = tokio::process::Command::new("df")
+    fn get_free_space_linux(&self, path: &str) -> u64 {
+        if let Ok(output) = std::process::Command::new("df")
             .args(["-k", path])
             .output()
-            .await
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines().skip(1) {
@@ -409,7 +440,7 @@ impl UsbService {
     }
 
     #[cfg(target_os = "windows")]
-    async fn get_windows_volumes(&self) -> Result<Vec<DriveModel>> {
+    fn get_windows_volumes(&self) -> Result<Vec<DriveModel>> {
         // Windows implementation using winapi
         // For now, return empty vector
         Ok(Vec::new())
