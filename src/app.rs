@@ -160,7 +160,7 @@ impl Application for EtcherusApp {
     }
 
     // ✅ FIXED: Store HomeView in a variable
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         let home_view = HomeView::new(
             &self.drives,
             self.selected_drive.clone(),

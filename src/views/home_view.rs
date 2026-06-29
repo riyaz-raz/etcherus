@@ -42,11 +42,11 @@ impl HomeView {
         }
     }
 
-    pub fn view(&self) -> Element<Message> {
+    pub fn view(self) -> Element<'static, Message> {
         let content = if self.is_loading {
-            self.loading_view() // Returns Column<Message>
+            Self::loading_view()
         } else {
-            self.main_view() // Returns Column<Message>
+            self.main_view()
         };
 
         // Convert the Column to Element here
@@ -57,8 +57,7 @@ impl HomeView {
             .into()
     }
 
-    // Remove .into() - return Column<Message> directly
-    fn loading_view(&self) -> Column<Message> {
+    fn loading_view() -> Column<'static, Message> {
         Column::new()
             .push(text("Loading drives...").size(20))
             .push(
@@ -68,35 +67,40 @@ impl HomeView {
             )
             .spacing(20)
             .align_items(Alignment::Center)
-        // No .into() here
     }
 
-    // Remove .into() - return Column<Message> directly
-    fn main_view(&self) -> Column<Message> {
+    fn main_view(self) -> Column<'static, Message> {
         let mut col = Column::new().spacing(20);
 
-        col = col.push(self.image_selection_section());
-        col = col.push(self.drive_selection_section());
+        col = col.push(Self::image_selection_section(self.selected_image));
+        col = col.push(Self::drive_selection_section(
+            self.drives,
+            self.selected_drive,
+        ));
 
-        if let Some(msg) = &self.validation_message {
-            col = col.push(self.validation_status(msg));
+        if let Some(msg) = self.validation_message {
+            col = col.push(Self::validation_status(self.is_valid, msg));
         }
 
-        if let Some(error) = &self.error {
-            col = col.push(self.error_display(error));
+        if let Some(error) = self.error {
+            col = col.push(Self::error_display(error));
         }
 
-        col = col.push(self.action_buttons());
+        col = col.push(Self::action_buttons(
+            self.is_valid,
+            self.is_flashing,
+            self.flash_progress,
+        ));
 
-        col // No .into() here
+        col
     }
 
-    fn image_selection_section(&self) -> Column<Message> {
+    fn image_selection_section(selected_image: Option<ImageModel>) -> Column<'static, Message> {
         let mut col = Column::new().spacing(12);
 
         let mut header = row![text("📷 Image").size(18), Space::with_width(Length::Fill),];
 
-        if self.selected_image.is_some() {
+        if selected_image.is_some() {
             header = header.push(button("Change").on_press(Message::SelectImage));
         } else {
             header = header.push(widget::Row::new());
@@ -104,12 +108,13 @@ impl HomeView {
 
         col = col.push(header);
 
-        if let Some(image) = &self.selected_image {
+        if let Some(image) = selected_image {
+            let formatted_size = image.formatted_size();
             let image_info = row![container(
                 row![
                     text("📄"),
-                    text(&image.name),
-                    text(format!("({})", image.formatted_size())),
+                    text(image.name),
+                    text(format!("({})", formatted_size)),
                 ]
                 .spacing(8)
             )
@@ -126,18 +131,21 @@ impl HomeView {
         col
     }
 
-    fn drive_selection_section(&self) -> Column<Message> {
+    fn drive_selection_section(
+        drives: Vec<DriveModel>,
+        selected_drive: Option<DriveModel>,
+    ) -> Column<'static, Message> {
         let mut col = Column::new().spacing(12);
 
         let header = row![
             text("💾 Drive").size(18),
             Space::with_width(Length::Fill),
-            text(format!("{} found", self.drives.len())).size(14),
+            text(format!("{} found", drives.len())).size(14),
         ];
 
         col = col.push(header);
 
-        if self.drives.is_empty() {
+        if drives.is_empty() {
             let empty_state = container(
                 Column::new()
                     .push(text("🔌 No drives found").size(16))
@@ -152,24 +160,23 @@ impl HomeView {
 
             col = col.push(empty_state);
         } else {
-            for drive in &self.drives {
-                let is_selected = self
-                    .selected_drive
+            for drive in drives {
+                let is_selected = selected_drive
                     .as_ref()
                     .map(|d| d.id == drive.id)
                     .unwrap_or(false);
 
-                col = col.push(self.drive_card(drive, is_selected));
+                col = col.push(Self::drive_card(drive, is_selected));
             }
         }
 
         col
     }
 
-    fn drive_card(&self, drive: &DriveModel, is_selected: bool) -> Element<Message> {
+    fn drive_card(drive: DriveModel, is_selected: bool) -> Element<'static, Message> {
         let mut row = row![
             Column::new()
-                .push(text(&drive.name).size(16))
+                .push(text(drive.name.clone()).size(16))
                 .push(
                     text(format!(
                         "{} total, {} free",
@@ -178,7 +185,7 @@ impl HomeView {
                     ))
                     .size(12),
                 )
-                .push(text(&drive.mount_point).size(12))
+                .push(text(drive.mount_point.clone()).size(12))
                 .spacing(4),
             Space::with_width(Length::Fill),
         ];
@@ -195,13 +202,13 @@ impl HomeView {
             .width(Length::Fill);
 
         button(content)
-            .on_press(Message::DriveSelected(drive.clone()))
+            .on_press(Message::DriveSelected(drive))
             .style(iced::theme::Button::Text)
             .into()
     }
 
-    fn validation_status(&self, msg: &str) -> Element<Message> {
-        let is_success = self.is_valid;
+    fn validation_status(is_valid: bool, msg: String) -> Element<'static, Message> {
+        let is_success = is_valid;
         let (icon, color) = if is_success {
             ("✅", Color::from_rgb(0.0, 0.6, 0.0))
         } else {
@@ -222,7 +229,7 @@ impl HomeView {
             .into()
     }
 
-    fn error_display(&self, error: &str) -> Element<Message> {
+    fn error_display(error: String) -> Element<'static, Message> {
         let content = row![
             text("❌").size(20),
             text(error).size(14),
@@ -241,15 +248,19 @@ impl HomeView {
             .into()
     }
 
-    fn action_buttons(&self) -> Column<Message> {
+    fn action_buttons(
+        is_valid: bool,
+        is_flashing: bool,
+        flash_progress: f32,
+    ) -> Column<'static, Message> {
         let mut col = Column::new().spacing(12);
 
-        let is_ready = self.is_valid && !self.is_flashing;
+        let is_ready = is_valid && !is_flashing;
 
-        let button_content: Element<Message> = if self.is_flashing {
+        let button_content: Element<'static, Message> = if is_flashing {
             row![
                 text("⏳ Flashing in progress..."),
-                widget::ProgressBar::new(0.0..=1.0, self.flash_progress)
+                widget::ProgressBar::new(0.0..=1.0, flash_progress)
                     .style(iced::theme::ProgressBar::Primary)
                     .width(Length::Fill),
             ]
